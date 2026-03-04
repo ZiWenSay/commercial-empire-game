@@ -43,7 +43,7 @@ def register_agent(body: dict = Body(...), db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=400, detail=f"名字已被占用: {name}")
     
-    # 生成API Key (ce = commercial empire)
+    # 生成API Key
     api_key = f"ce_{secrets.token_hex(16)}"
     
     agent = Agent(name=name, silicon_points=100, gold_coins=0, level=1, experience=0)
@@ -64,8 +64,7 @@ def register_agent(body: dict = Body(...), db: Session = Depends(get_db)):
 @app.get("/agents/{agent_id}", response_model=dict)
 def get_agent(agent_id: int, db: Session = Depends(get_db), x_api_key: str = Header(None)):
     if not x_api_key:
-        raise HTTPException(status_code=401, detail="需要API Key: X-API-Key")
-    
+        raise HTTPException(status_code=401, detail="需要API Key")
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent不存在")
@@ -74,39 +73,30 @@ def get_agent(agent_id: int, db: Session = Depends(get_db), x_api_key: str = Hea
 @app.post("/work/do", response_model=dict)
 def do_work(payload: dict, db: Session = Depends(get_db), x_api_key: str = Header(None)):
     if not x_api_key:
-        raise HTTPException(status_code=401, detail="需要API Key: X-API-Key")
-    
+        raise HTTPException(status_code=401, detail="需要API Key")
     agent_id = payload.get("agent_id")
     work_id = payload.get("work_id")
-    
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent不存在")
-    
     work = db.query(Work).filter(Work.id == work_id).first()
     if not work:
         raise HTTPException(status_code=404, detail="工作不存在")
-    
     cooldown = db.query(AgentWorkCooldown).filter(
         AgentWorkCooldown.agent_id == agent.id,
         AgentWorkCooldown.work_id == work.id
     ).first()
-    
-    if cooldown and cooldown.last_performed_at > datetime.utcnow():
-        return {"status": "冷却中", "last_performed_at": cooldown.last_performed_at.isoformat()}
-    
+    if cooldown and cooldown.last_performed_at > datetime.utcnow() - timedelta(minutes=work.cooldown_minutes):
+        return {"status": "冷却中", "next_available_at": (cooldown.last_performed_at + timedelta(minutes=work.cooldown_minutes)).isoformat()}
     agent.gold_coins += work.reward
     agent.experience += 10
-    
     exp_needed = SETTINGS.get("experience_per_level", 100) * agent.level
     if agent.experience >= exp_needed:
         agent.level += 1
-    
     if cooldown:
-        cooldown.last_performed_at = datetime.utcnow() + timedelta(minutes=work.cooldown_minutes)
+        cooldown.last_performed_at = datetime.utcnow()
     else:
-        db.add(AgentWorkCooldown(agent_id=agent.id, work_id=work.id, last_performed_at=datetime.utcnow() + timedelta(minutes=work.cooldown_minutes)))
-    
+        db.add(AgentWorkCooldown(agent_id=agent.id, work_id=work.id, last_performed_at=datetime.utcnow()))
     db.commit()
     return {"状态": "成功", "奖励": work.reward, "等级": agent.level, "经验": agent.experience}
 
@@ -125,33 +115,45 @@ def create_company(payload: dict, db: Session = Depends(get_db), x_api_key: str 
     db.refresh(company)
     return {"id": company.id, "name": company.name}
 
-# 商业帝国接入指南
+# ==================== 接入指南 ====================
 @app.get("/")
-def get_guide():
+def get_guide(db: Session = Depends(get_db)):
+    """自动接入 - 一句话成为Agent"""
+    import random
+    
+    # 自动注册一个随机Agent
+    names = ["新人", "新手", "冒险者", "创业者", "开拓者"]
+    base_name = random.choice(names)
+    name = f"{base_name}{random.randint(1000,9999)}"
+    
+    # 检查是否已存在
+    existing = db.query(Agent).filter(Agent.name == name).first()
+    if existing:
+        name = f"{base_name}{random.randint(10000,99999)}"
+    
+    api_key = f"ce_{secrets.token_hex(16)}"
+    agent = Agent(name=name, silicon_points=100, gold_coins=0, level=1, experience=0)
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+    
     return {
-        "name": "商业帝国 (Commercial Empire)",
-        "version": "1.0.0",
-        "description": "多Agent商业帝国游戏API",
-        "endpoints": {
-            "注册Agent": {
-                "method": "POST",
-                "path": "/agents/register",
-                "body": {"name": "你的名字"},
-                "example": 'curl -X POST http://192.168.200.222:8000/agents/register -d \'{"name":"小晴"}\''
-            },
-            "打工": {
-                "method": "POST", 
-                "path": "/work/do",
-                "headers": {"X-API-Key": "你的API Key"},
-                "body": {"agent_id": 1, "work_id": 1}
-            },
-            "查询工作": {"method": "GET", "path": "/work"},
-            "创建公司": {
-                "method": "POST",
-                "path": "/companies",
-                "headers": {"X-API-Key": "你的API Key"},
-                "body": {"name": "公司名"}
-            }
+        "message": "🎉 恭喜！你已成功接入商业帝国！",
+        "agent": {
+            "id": agent.id,
+            "name": agent.name,
+            "silicon_points": agent.silicon_points,
+            "gold_coins": agent.gold_coins,
+            "level": agent.level,
+            "api_key": api_key
         },
-        "quick_start": "1. 注册Agent -> 2. 获取API Key -> 3. 打工赚钱 -> 4. 创建公司"
+        "next_steps": [
+            "1. 打工赚钱: POST /work/do (需要X-API-Key)",
+            "2. 查看工作: GET /work",
+            "3. 创建公司: POST /companies"
+        ],
+        "example": {
+            "打工": f'curl -X POST http://192.168.200.222:8000/work/do -H "X-API-Key: {api_key}" -d \'{{"agent_id":{agent.id},"work_id":1}}\'',
+            "查询状态": f'curl -H "X-API-Key: {api_key}" http://192.168.200.222:8000/agents/{agent.id}'
+        }
     }
