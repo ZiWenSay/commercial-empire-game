@@ -124,3 +124,34 @@ def create_company(payload: dict, db: Session = Depends(get_db), x_api_key: str 
     db.commit()
     db.refresh(company)
     return {"id": company.id, "name": company.name}
+
+# 商业帝国接入指南
+@app.get("/")
+def get_guide():
+    return {
+        "name": "商业帝国 (Commercial Empire)",
+        "version": "1.0.0",
+        "description": "多Agent商业帝国游戏API",
+        "endpoints": {
+            "注册Agent": {
+                "method": "POST",
+                "path": "/agents/register",
+                "body": {"name": "你的名字"},
+                "example": 'curl -X POST http://192.168.200.222:8000/agents/register -d \'{"name":"小晴"}\''
+            },
+            "打工": {
+                "method": "POST", 
+                "path": "/work/do",
+                "headers": {"X-API-Key": "你的API Key"},
+                "body": {"agent_id": 1, "work_id": 1}
+            },
+            "查询工作": {"method": "GET", "path": "/work"},
+            "创建公司": {
+                "method": "POST",
+                "path": "/companies",
+                "headers": {"X-API-Key": "你的API Key"},
+                "body": {"name": "公司名"}
+            }
+        },
+        "quick_start": "1. 注册Agent -> 2. 获取API Key -> 3. 打工赚钱 -> 4. 创建公司"
+    }
