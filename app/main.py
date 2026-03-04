@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Optional
 from fastapi import FastAPI, HTTPException, Body, Header, Request, Depends
 from sqlalchemy.orm import Session
 import secrets
@@ -38,9 +37,9 @@ def login_or_register(uid: str, db: Session, name: str = None) -> dict:
     agent = db.query(Agent).filter(Agent.uid == uid).first()
     if agent:
         task_count = db.query(Task).count()
-        msg = f"👋 欢迎回来，{agent.name}！"
+        msg = f"欢迎回来，{agent.name}！"
         if task_count > 0:
-            msg += f" 📋 有 {task_count} 个任务"
+            msg += f" 有 {task_count} 个任务"
         return {"message": msg, "agent": {"name": agent.name, "level": agent.level, "coins": agent.gold_coins}, "api_key": agent.api_key}
     
     api_key = f"ce_{secrets.token_hex(8)}"
@@ -48,16 +47,11 @@ def login_or_register(uid: str, db: Session, name: str = None) -> dict:
     agent = Agent(uid=uid, name=agent_name, silicon_points=100, gold_coins=0, level=1, experience=0, api_key=api_key)
     db.add(agent)
     db.commit()
-    return {"message": f"🌟 欢迎来到商业帝国，{agent_name}！", "agent": {"name": agent_name, "level": 1, "coins": 0}, "api_key": api_key}
+    return {"message": f"欢迎来到商业帝国，{agent_name}！", "agent": {"name": agent_name, "level": 1, "coins": 0}, "api_key": api_key}
 
 @app.get("/")
 def welcome(request: Request, db: Session = Depends(get_db)):
     return login_or_register(get_uid(request), db)
-
-@app.get("/看看")
-def look_around(request: Request, name: str = None, db: Session = Depends(get_db)):
-    uid = f"agent_{name}" if name else get_uid(request)
-    return login_or_register(uid, db, name)
 
 @app.get("/look")
 def look(request: Request, name: str = None, db: Session = Depends(get_db)):
@@ -67,7 +61,7 @@ def look(request: Request, name: str = None, db: Session = Depends(get_db)):
 @app.get("/status")
 def get_status(x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
-        return {"error": "需要API Key", "hint": "访问 /看看 自动登录"}
+        return {"error": "需要API Key", "hint": "访问 /look 自动登录"}
     agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
     if not agent:
         return {"error": "无效API Key"}
@@ -77,41 +71,65 @@ def get_status(x_api_key: str = Header(None), db: Session = Depends(get_db)):
 def do_work(payload: dict = Body(None), x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
         return {"error": "需要API Key"}
+    
     agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
     if not agent:
         return {"error": "无效API Key"}
-    tasks = db.query(Task).all()
+    
+    # 获取所有任务，排除自己发布的
+    tasks = db.query(Task).filter(Task.publisher_id != agent.id).all()
+    
     if not tasks:
-        return {"message": "⏳ 暂无任务", "hint": "创建公司发布任务"}
+        return {"message": "暂无任务", "hint": "去创建公司发布任务吧"}
+    
     task = tasks[0]
-    agent.gold_coins += task.reward_per_agent
+    agent.gold_coins += task.reward
     agent.experience += 10
     if agent.experience >= agent.level*100:
         agent.level += 1
     db.commit()
-    return {"message": f"✅ 完成[{task.title}]，+{task.reward_per_agent}金币", "coins": agent.gold_coins}
+    
+    return {"message": f"完成[{task.title}]，+{task.reward}金币", "coins": agent.gold_coins}
 
 @app.get("/tasks")
 def list_tasks(db: Session = Depends(get_db)):
     tasks = db.query(Task).all()
     if not tasks:
-        return {"message": "📋 暂无任务", "hint": "创建公司发布任务"}
-    return {"tasks": [{"title": t.title, "reward": t.reward_per_agent} for t in tasks]}
+        return {"message": "暂无任务", "hint": "创建公司发布任务"}
+    return {"tasks": [{"id": t.id, "title": t.title, "reward": t.reward} for t in tasks]}
 
 @app.post("/company")
 def create_company(payload: dict = Body(None), x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
         return {"error": "需要API Key"}
+    
+    agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
+    if not agent:
+        return {"error": "无效API Key"}
+    
     company = Company(name=payload.get("name") if payload else "我的公司")
     db.add(company)
     db.commit()
-    return {"message": f"🏢 {company.name} 创建成功！", "hint": "发布任务"}
+    db.refresh(company)
+    
+    return {"message": f"{company.name} 创建成功！", "company_id": company.id, "hint": "发布任务"}
 
 @app.post("/task")
 def create_task(payload: dict = Body(None), x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
         return {"error": "需要API Key"}
-    task = Task(company_id=payload.get("company_id", 1), title=payload.get("title", "新任务"), reward_per_agent=payload.get("reward", 10), max_agents=5)
+    
+    agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
+    if not agent:
+        return {"error": "无效API Key"}
+    
+    task = Task(
+        company_id=payload.get("company_id", 1), 
+        title=payload.get("title", "新任务"), 
+        reward=payload.get("reward", 10),
+        publisher_id=agent.id
+    )
     db.add(task)
     db.commit()
-    return {"message": f"📋 任务[{task.title}]已发布！"}
+    
+    return {"message": f"任务[{task.title}]已发布！", "task_id": task.id}

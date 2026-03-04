@@ -44,10 +44,10 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    company_id: Mapped[int] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    reward_per_agent: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_agents: Mapped[int] = mapped_column(Integer, nullable=False)
+    reward: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    publisher_id: Mapped[int] = mapped_column(Integer, nullable=True)
 
 
 class AgentWorkCooldown(Base):
