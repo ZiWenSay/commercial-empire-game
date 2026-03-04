@@ -36,18 +36,15 @@ def get_uid(request: Request) -> str:
 def login_or_register(uid: str, db: Session, name: str = None) -> dict:
     agent = db.query(Agent).filter(Agent.uid == uid).first()
     if agent:
-        task_count = db.query(Task).count()
-        msg = f"欢迎回来，{agent.name}！"
-        if task_count > 0:
-            msg += f" 有 {task_count} 个任务"
-        return {"message": msg, "agent": {"name": agent.name, "level": agent.level, "coins": agent.gold_coins}, "api_key": agent.api_key}
+        return {"message": f"欢迎回来，{agent.name}！", "agent": {"name": agent.name, "level": agent.level, "coins": agent.gold_coins}, "api_key": agent.api_key, "agent_id": agent.id}
     
     api_key = f"ce_{secrets.token_hex(8)}"
     agent_name = name if name else f"新Agent{uid[-6:]}"
     agent = Agent(uid=uid, name=agent_name, silicon_points=100, gold_coins=0, level=1, experience=0, api_key=api_key)
     db.add(agent)
     db.commit()
-    return {"message": f"欢迎来到商业帝国，{agent_name}！", "agent": {"name": agent_name, "level": 1, "coins": 0}, "api_key": api_key}
+    db.refresh(agent)
+    return {"message": f"欢迎来到商业帝国，{agent_name}！", "agent": {"name": agent_name, "level": 1, "coins": 0}, "api_key": api_key, "agent_id": agent.id}
 
 @app.get("/")
 def welcome(request: Request, db: Session = Depends(get_db)):
@@ -65,7 +62,7 @@ def get_status(x_api_key: str = Header(None), db: Session = Depends(get_db)):
     agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
     if not agent:
         return {"error": "无效API Key"}
-    return {"name": agent.name, "level": agent.level, "coins": agent.gold_coins}
+    return {"name": agent.name, "level": agent.level, "coins": agent.gold_coins, "agent_id": agent.id}
 
 @app.post("/work")
 def do_work(payload: dict = Body(None), x_api_key: str = Header(None), db: Session = Depends(get_db)):
@@ -76,7 +73,7 @@ def do_work(payload: dict = Body(None), x_api_key: str = Header(None), db: Sessi
     if not agent:
         return {"error": "无效API Key"}
     
-    # 获取所有任务，排除自己发布的
+    # 排除自己发布的任务
     tasks = db.query(Task).filter(Task.publisher_id != agent.id).all()
     
     if not tasks:
@@ -96,7 +93,15 @@ def list_tasks(db: Session = Depends(get_db)):
     tasks = db.query(Task).all()
     if not tasks:
         return {"message": "暂无任务", "hint": "创建公司发布任务"}
-    return {"tasks": [{"id": t.id, "title": t.title, "reward": t.reward} for t in tasks]}
+    
+    # 显示任务及发布者
+    result = []
+    for t in tasks:
+        publisher = db.query(Agent).filter(Agent.id == t.publisher_id).first()
+        publisher_name = publisher.name if publisher else "未知"
+        result.append({"id": t.id, "title": t.title, "reward": t.reward, "publisher": publisher_name})
+    
+    return {"tasks": result}
 
 @app.post("/company")
 def create_company(payload: dict = Body(None), x_api_key: str = Header(None), db: Session = Depends(get_db)):
@@ -127,9 +132,9 @@ def create_task(payload: dict = Body(None), x_api_key: str = Header(None), db: S
         company_id=payload.get("company_id", 1), 
         title=payload.get("title", "新任务"), 
         reward=payload.get("reward", 10),
-        publisher_id=agent.id
+        publisher_id=agent.id  # 记录发布者
     )
     db.add(task)
     db.commit()
     
-    return {"message": f"任务[{task.title}]已发布！", "task_id": task.id}
+    return {"message": f"任务[{task.title}]已发布！by {agent.name}", "task_id": task.id, "publisher": agent.name}
