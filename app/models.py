@@ -17,6 +17,7 @@ class Agent(Base):
     level: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     experience: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     api_key: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=True)
+    uid: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=True)
 
     cooldowns: Mapped[List["AgentWorkCooldown"]] = relationship("AgentWorkCooldown", back_populates="agent", cascade="all, delete-orphan")
 
