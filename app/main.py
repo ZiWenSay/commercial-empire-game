@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List
-from fastapi import FastAPI, HTTPException, Body, Header, Depends, Query
+from fastapi import FastAPI, HTTPException, Body, Header, Depends, Query, Request
 from sqlalchemy.orm import Session
 import secrets
 
@@ -27,15 +27,21 @@ def on_startup():
     finally:
         db.close()
 
-# 用唯一标识登录
+def get_uid(request: Request) -> str:
+    """自动获取唯一标识 - 优先从Header获取，其次用IP"""
+    # 1. 从Telegram @username 获取
+    if request.headers.get("X-Telegram-User-ID"):
+        return f"tg_{request.headers.get('X-Telegram-User-ID')}"
+    # 2. 从URL参数获取
+    if request.query_params.get("uid"):
+        return request.query_params.get("uid")
+    # 3. 用客户端IP
+    client_ip = request.client.host if request.client else "unknown"
+    return f"ip_{client_ip.replace('.', '_')}"
+
 @app.get("/")
-def welcome(uid: str = Query(None), db: Session = Depends(get_db)):
-    if not uid:
-        return {
-            "message": "🏪 商业帝国",
-            "hint": "请用唯一标识登录",
-            "example": "http://192.168.200.222:8000/?uid=1459124456"
-        }
+def welcome(request: Request, db: Session = Depends(get_db)):
+    uid = get_uid(request)
     
     agent = db.query(Agent).filter(Agent.uid == uid).first()
     if agent:
@@ -50,9 +56,9 @@ def welcome(uid: str = Query(None), db: Session = Depends(get_db)):
             "hint": "接任务 or 创建公司"
         }
     
-    # 新用户 → 注册
+    # 新用户
     api_key = f"ce_{secrets.token_hex(8)}"
-    name = f"用户{uid[-4:]}"  # 默认名
+    name = f"新用户{uid[-4:]}"
     agent = Agent(uid=uid, name=name, silicon_points=100, gold_coins=0, level=1, experience=0, api_key=api_key)
     db.add(agent)
     db.commit()
@@ -64,39 +70,31 @@ def welcome(uid: str = Query(None), db: Session = Depends(get_db)):
         "hint": "查看任务 or 创建公司"
     }
 
-# 状态查询
 @app.get("/status")
 def get_status(x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
-        return {"error": "需要API Key", "hint": "用uid登录: /?uid=你的ID"}
-    
+        return {"error": "需要API Key", "hint": "访问首页自动登录"}
     agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
     if not agent:
         return {"error": "无效API Key"}
-    
     return {"name": agent.name, "level": agent.level, "coins": agent.gold_coins, "exp": f"{agent.experience}/{agent.level*100}"}
 
-# 打工
 @app.post("/work")
 def do_work(payload: dict = Body(None), x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
-        return {"error": "需要API Key", "hint": "用uid登录: /?uid=你的ID"}
-    
+        return {"error": "需要API Key", "hint": "访问首页自动登录"}
     agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
     if not agent:
         return {"error": "无效API Key"}
-    
     tasks = db.query(Task).all()
     if not tasks:
         return {"message": "⏳ 暂无任务", "hint": "创建公司发布任务"}
-    
     task = tasks[0]
     agent.gold_coins += task.reward_per_agent
     agent.experience += 10
     if agent.experience >= agent.level*100:
         agent.level += 1
     db.commit()
-    
     return {"message": f"✅ 完成[{task.title}]，+{task.reward_per_agent}金币", "coins": agent.gold_coins, "level": agent.level}
 
 @app.get("/tasks")
