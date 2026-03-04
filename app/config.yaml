@@ -1,0 +1,12 @@
+settings:
+  app_name: Commercial Empire API
+  database_url: sqlite:///./empire.db
+  experience_per_work: 10
+  level_threshold: 100
+  seed_works:
+    - work_type: trade
+      reward: 5
+      cooldown_minutes: 5
+    - work_type: mine
+      reward: 3
+      cooldown_minutes: 2
