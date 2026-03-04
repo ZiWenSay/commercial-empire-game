@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import List
-from fastapi import FastAPI, HTTPException, Body, Header, Depends, Query, Request
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Body, Header, Request, Depends
 from sqlalchemy.orm import Session
 import secrets
 
@@ -8,81 +8,75 @@ from .config import SETTINGS
 from .database import Base, engine, get_db, SessionLocal
 from .models import Agent, Work, Company, Task
 
-app = FastAPI(title=SETTINGS.get("app_name", "Commercial Empire"))
+app = FastAPI(title=SETTINGS.get("app_name", "商业帝国"))
 
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
-    seed = SETTINGS.get("seed_works", [])
     db = SessionLocal()
     try:
-        for w in seed:
-            wt = w.get("work_type")
-            if not wt:
-                continue
-            exists = db.query(Work).filter(Work.work_type == wt).first()
-            if not exists:
-                db.add(Work(work_type=wt, reward=int(w.get("reward", 0)), cooldown_minutes=int(w.get("cooldown_minutes", 0))))
+        for w in SETTINGS.get("seed_works", []):
+            if w.get("work_type"):
+                exists = db.query(Work).filter(Work.work_type == w["work_type"]).first()
+                if not exists:
+                    db.add(Work(work_type=w["work_type"], reward=int(w.get("reward", 0)), cooldown_minutes=int(w.get("cooldown_minutes", 0))))
         db.commit()
     finally:
         db.close()
 
 def get_uid(request: Request) -> str:
-    """自动获取唯一标识 - 优先从Header获取，其次用IP"""
-    # 1. 从Telegram @username 获取
     if request.headers.get("X-Telegram-User-ID"):
         return f"tg_{request.headers.get('X-Telegram-User-ID')}"
-    # 2. 从URL参数获取
+    if request.headers.get("X-Agent-ID"):
+        return f"agent_{request.headers.get('X-Agent-ID')}"
     if request.query_params.get("uid"):
         return request.query_params.get("uid")
-    # 3. 用客户端IP
     client_ip = request.client.host if request.client else "unknown"
     return f"ip_{client_ip.replace('.', '_')}"
 
-@app.get("/")
-def welcome(request: Request, db: Session = Depends(get_db)):
-    uid = get_uid(request)
-    
+def login_or_register(uid: str, db: Session, name: str = None) -> dict:
     agent = db.query(Agent).filter(Agent.uid == uid).first()
     if agent:
         task_count = db.query(Task).count()
         msg = f"👋 欢迎回来，{agent.name}！"
         if task_count > 0:
             msg += f" 📋 有 {task_count} 个任务"
-        return {
-            "message": msg,
-            "agent": {"name": agent.name, "level": agent.level, "coins": agent.gold_coins, "exp": agent.experience},
-            "api_key": agent.api_key,
-            "hint": "接任务 or 创建公司"
-        }
+        return {"message": msg, "agent": {"name": agent.name, "level": agent.level, "coins": agent.gold_coins}, "api_key": agent.api_key}
     
-    # 新用户
     api_key = f"ce_{secrets.token_hex(8)}"
-    name = f"新用户{uid[-4:]}"
-    agent = Agent(uid=uid, name=name, silicon_points=100, gold_coins=0, level=1, experience=0, api_key=api_key)
+    agent_name = name if name else f"新Agent{uid[-6:]}"
+    agent = Agent(uid=uid, name=agent_name, silicon_points=100, gold_coins=0, level=1, experience=0, api_key=api_key)
     db.add(agent)
     db.commit()
-    
-    return {
-        "message": f"🌟 注册成功！{name}，欢迎来到商业帝国！",
-        "agent": {"name": name, "level": 1, "coins": 0},
-        "api_key": api_key,
-        "hint": "查看任务 or 创建公司"
-    }
+    return {"message": f"🌟 欢迎来到商业帝国，{agent_name}！", "agent": {"name": agent_name, "level": 1, "coins": 0}, "api_key": api_key}
+
+@app.get("/")
+def welcome(request: Request, db: Session = Depends(get_db)):
+    return login_or_register(get_uid(request), db)
+
+@app.get("/看看")
+def look_around(request: Request, name: str = None, db: Session = Depends(get_db)):
+    uid = f"agent_{name}" if name else get_uid(request)
+    return login_or_register(uid, db, name)
+
+@app.get("/look")
+def look(request: Request, name: str = None, db: Session = Depends(get_db)):
+    uid = f"agent_{name}" if name else get_uid(request)
+    return login_or_register(uid, db, name)
 
 @app.get("/status")
 def get_status(x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
-        return {"error": "需要API Key", "hint": "访问首页自动登录"}
+        return {"error": "需要API Key", "hint": "访问 /看看 自动登录"}
     agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
     if not agent:
         return {"error": "无效API Key"}
-    return {"name": agent.name, "level": agent.level, "coins": agent.gold_coins, "exp": f"{agent.experience}/{agent.level*100}"}
+    return {"name": agent.name, "level": agent.level, "coins": agent.gold_coins}
 
 @app.post("/work")
 def do_work(payload: dict = Body(None), x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if not x_api_key:
-        return {"error": "需要API Key", "hint": "访问首页自动登录"}
+        return {"error": "需要API Key"}
     agent = db.query(Agent).filter(Agent.api_key == x_api_key).first()
     if not agent:
         return {"error": "无效API Key"}
@@ -95,7 +89,7 @@ def do_work(payload: dict = Body(None), x_api_key: str = Header(None), db: Sessi
     if agent.experience >= agent.level*100:
         agent.level += 1
     db.commit()
-    return {"message": f"✅ 完成[{task.title}]，+{task.reward_per_agent}金币", "coins": agent.gold_coins, "level": agent.level}
+    return {"message": f"✅ 完成[{task.title}]，+{task.reward_per_agent}金币", "coins": agent.gold_coins}
 
 @app.get("/tasks")
 def list_tasks(db: Session = Depends(get_db)):
@@ -120,4 +114,4 @@ def create_task(payload: dict = Body(None), x_api_key: str = Header(None), db: S
     task = Task(company_id=payload.get("company_id", 1), title=payload.get("title", "新任务"), reward_per_agent=payload.get("reward", 10), max_agents=5)
     db.add(task)
     db.commit()
-    return {"message": f"📋 任务[{task.title}]已发布！", "reward": task.reward_per_agent}
+    return {"message": f"📋 任务[{task.title}]已发布！"}
