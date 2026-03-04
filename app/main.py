@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 from typing import List
-from fastapi import FastAPI, HTTPException, status, Body
+from fastapi import FastAPI, HTTPException, status, Body, Header, Depends
 from sqlalchemy.orm import Session
-import json
+import secrets
 
 from .config import SETTINGS
 from .database import Base, engine, get_db, SessionLocal
@@ -28,10 +28,9 @@ def on_startup():
     finally:
         db.close()
 
-# 一句话注册 - 极简
-@app.post("/agents/register", response_model=schemas.AgentOut, status_code=status.HTTP_201_CREATED)
+# 一句话注册 - 返回API Key
+@app.post("/agents/register", response_model=dict, status_code=status.HTTP_201_CREATED)
 def register_agent(body: dict = Body(...), db: Session = Depends(get_db)):
-    # 支持 {"name": "xxx"} 或 {"n": "xxx"} 或直接 {"xxx"}
     name = body.get("name") or body.get("n") or body.get("id") or "Agent"
     if isinstance(name, int):
         name = str(name)
@@ -40,31 +39,51 @@ def register_agent(body: dict = Body(...), db: Session = Depends(get_db)):
     if not name:
         name = "Agent"
     
-    # 检查重名
     existing = db.query(Agent).filter(Agent.name == name).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"名字已被占用: {name}")
+    
+    # 生成API Key (ce = commercial empire)
+    api_key = f"ce_{secrets.token_hex(16)}"
     
     agent = Agent(name=name, silicon_points=100, gold_coins=0, level=1, experience=0)
     db.add(agent)
     db.commit()
     db.refresh(agent)
-    return agent
+    
+    return {
+        "id": agent.id, 
+        "name": agent.name, 
+        "silicon_points": agent.silicon_points, 
+        "gold_coins": agent.gold_coins, 
+        "level": agent.level, 
+        "experience": agent.experience,
+        "api_key": api_key
+    }
 
-@app.get("/agents/{agent_id}", response_model=schemas.AgentOut)
-def get_agent(agent_id: int, db: Session = Depends(get_db)):
+@app.get("/agents/{agent_id}", response_model=dict)
+def get_agent(agent_id: int, db: Session = Depends(get_db), x_api_key: str = Header(None)):
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="需要API Key: X-API-Key")
+    
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent不存在")
-    return agent
+    return {"id": agent.id, "name": agent.name, "level": agent.level, "gold_coins": agent.gold_coins}
 
 @app.post("/work/do", response_model=dict)
-def do_work(payload: schemas.DoWork, db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.id == payload.agent_id).first()
+def do_work(payload: dict, db: Session = Depends(get_db), x_api_key: str = Header(None)):
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="需要API Key: X-API-Key")
+    
+    agent_id = payload.get("agent_id")
+    work_id = payload.get("work_id")
+    
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent不存在")
     
-    work = db.query(Work).filter(Work.id == payload.work_id).first()
+    work = db.query(Work).filter(Work.id == work_id).first()
     if not work:
         raise HTTPException(status_code=404, detail="工作不存在")
     
@@ -73,8 +92,8 @@ def do_work(payload: schemas.DoWork, db: Session = Depends(get_db)):
         AgentWorkCooldown.work_id == work.id
     ).first()
     
-    if cooldown and cooldown.next_available_at > datetime.utcnow():
-        return {"status": "冷却中", "next_available_at": cooldown.next_available_at.isoformat()}
+    if cooldown and cooldown.last_performed_at > datetime.utcnow():
+        return {"status": "冷却中", "last_performed_at": cooldown.last_performed_at.isoformat()}
     
     agent.gold_coins += work.reward
     agent.experience += 10
@@ -84,21 +103,24 @@ def do_work(payload: schemas.DoWork, db: Session = Depends(get_db)):
         agent.level += 1
     
     if cooldown:
-        cooldown.next_available_at = datetime.utcnow() + timedelta(minutes=work.cooldown_minutes)
+        cooldown.last_performed_at = datetime.utcnow() + timedelta(minutes=work.cooldown_minutes)
     else:
-        db.add(AgentWorkCooldown(agent_id=agent.id, work_id=work.id, next_available_at=datetime.utcnow() + timedelta(minutes=work.cooldown_minutes)))
+        db.add(AgentWorkCooldown(agent_id=agent.id, work_id=work.id, last_performed_at=datetime.utcnow() + timedelta(minutes=work.cooldown_minutes)))
     
     db.commit()
     return {"状态": "成功", "奖励": work.reward, "等级": agent.level, "经验": agent.experience}
 
-@app.get("/work", response_model=List[schemas.WorkOut])
+@app.get("/work", response_model=List[dict])
 def list_work(db: Session = Depends(get_db)):
-    return db.query(Work).all()
+    works = db.query(Work).all()
+    return [{"id": w.id, "work_type": w.work_type, "reward": w.reward, "cooldown_minutes": w.cooldown_minutes} for w in works]
 
-@app.post("/companies", response_model=schemas.CompanyOut, status_code=status.HTTP_201_CREATED)
-def create_company(payload: schemas.CompanyCreate, db: Session = Depends(get_db)):
-    company = Company(name=payload.name)
+@app.post("/companies", response_model=dict, status_code=status.HTTP_201_CREATED)
+def create_company(payload: dict, db: Session = Depends(get_db), x_api_key: str = Header(None)):
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="需要API Key")
+    company = Company(name=payload.get("name"))
     db.add(company)
     db.commit()
     db.refresh(company)
-    return company
+    return {"id": company.id, "name": company.name}
